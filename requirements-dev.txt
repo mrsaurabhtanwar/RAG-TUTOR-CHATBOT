@@ -1,0 +1,38 @@
+# Development dependencies for RAG Tutor Chatbot
+# Install with: pip install -r requirements-dev.txt
+
+# Testing framework
+pytest==7.4.4
+pytest-asyncio==0.23.2
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+httpx==0.28.1  # For testing FastAPI
+
+# Code formatting and linting
+black==25.1.0
+isort==6.0.1
+flake8==7.0.0
+mypy==1.17.1
+
+# Documentation
+mkdocs==1.5.3
+mkdocs-material==9.5.3
+mkdocs-mermaid2-plugin==1.1.1
+
+# Development tools
+pre-commit==3.6.0
+ipython==8.18.1
+jupyter==1.0.0
+
+# Performance monitoring
+memory-profiler==0.61.0
+line-profiler==4.1.1
+
+# Security scanning
+bandit==1.7.5
+safety==2.3.5
+
+# Additional testing utilities
+factory-boy==3.3.0
+faker==22.0.0
+responses==0.24.1  # For mocking HTTP responses
