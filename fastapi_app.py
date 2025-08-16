@@ -405,9 +405,10 @@ ai_provider = AIProvider()
 resource_finder = ResourceFinder()
 
 
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(chat_request: ChatRequest) -> ChatResponse:
-    """Enhanced chat endpoint with detailed debugging"""
+    """Enhanced chat endpoint with refined prompts for natural responses"""
     start_time = datetime.now()
     
     try:
@@ -435,7 +436,7 @@ async def chat_endpoint(chat_request: ChatRequest) -> ChatResponse:
         concise_patterns = [
             r'^(?:what|who|when|where)\s+is\s+[\w\s\?\-\,]{1,80}\?*$',      # "what is gravity?"
             r'^(?:define|definition\s+of)\s+.+',                          # "define photosynthesis"
-            r'^what\s+is\s+(?:the\s+)?value\s+of\s+',                      # "what is the value of e"
+            r'^what\s+is\s+(?:the\s+)?(?:formula|chemical\s+formula)\s+(?:of|for)\s+',  # "what is the formula of water"
             r'^(?:capital\s+of|currency\s+of)\s+[\w\s]+$',                 # "capital of France"
             r'^(?:convert|how\s+many)\s+\d+(\.\d+)?\s+\w+\s+(?:to|in)\s+\w+', # "convert 5 km to miles"
             r'^(?:who\s+is|who\s+was)\s+[\w\s]+$',                         # "who is Einstein"
@@ -444,9 +445,8 @@ async def chat_endpoint(chat_request: ChatRequest) -> ChatResponse:
             r'^[\w\s]{1,40}\s*\?$'                           # short question under ~40 chars
         ]
 
-
         complex_patterns = [
-            r'^(?:explain|describe)\s+.+',                               # "explain photosynthesis"
+            r'^(?:explain|describe|tell\s+me\s+about)\s+.+',             # "explain photosynthesis"
             r'^(?:how|what|why)\s+do\s+[\w\s\?\-\,]{1,80}\?*$',          # "how do plants grow?"
             r'^(?:compare|contrast)\s+.+',                               # "compare apples and oranges"
             r'^(?:summarize|overview)\s+.+',                             # "summarize the main points"
@@ -478,52 +478,35 @@ async def chat_endpoint(chat_request: ChatRequest) -> ChatResponse:
             for pattern in complex_patterns
         )
 
-        # Create context-aware prompt
+        # Create refined prompts that encourage natural, appropriate responses
         if is_simple_question:
-            prompt = f"""As an AI tutor, provide a direct, concise answer to this simple question: {question}
+            prompt = f"""Answer this simple question naturally and briefly within 1 sentence:
 
-Keep your response:
-- Brief and to the point (2-4 sentences maximum)
-- Direct answer first
-- Only add explanation if absolutely necessary
+{question}
 
-Question: {question}
-Answer:"""
+Keep it conversational and direct - just give the answer without unnecessary elaboration."""
+
         elif is_concise_question:
-            prompt = f"""As an AI tutor, provide a clear and concise answer to this factual question: {question}
+            prompt = f"""Answer this question clearly and concisely with 1 to 2 sentences:
 
-Keep your response:
-- Start with the direct answer/definition
-- Provide key information in 3-5 sentences
-- Include one brief example if helpful
-- Avoid lengthy explanations
+{question}
 
-Question: {question}
-Answer:"""
+Provide the key information in a natural, conversational way. Be direct but complete - include the essential details without over-explaining."""
+
         elif is_complex_question:
-            prompt = f"""As an AI tutor, provide a detailed and thoughtful answer to this complex question: {question}
+            prompt = f"""Provide a thorough answer to this question 3-4 sentences long:
 
-Keep your response:
-- Start with a clear answer
-- Provide in-depth explanations and context
-- Include examples and analogies
-- Address potential follow-up questions
+{question}
 
-Question: {question}
-Answer:"""
+Give a comprehensive response that covers the important aspects. Use a natural, educational tone and include examples where helpful."""
+
         else:
-            prompt = f"""As an expert AI tutor, provide a comprehensive, educational answer to this question: {question}
+            # Default balanced approach
+            prompt = f"""Answer this question in a helpful, natural way:
 
-Your response should be:
-- Detailed and thorough
-- Include clear explanations with examples  
-- Break down complex concepts into understandable parts
-- Provide practical applications
-- Educational and encouraging
+{question}
 
-Question: {question}
-
-Answer:"""
+Provide appropriate detail - enough to be informative but not overwhelming. Be conversational and direct."""
         
         # Adjust max_tokens based on question type
         if is_simple_question:
