@@ -167,8 +167,15 @@ RAG-TUTOR-CHATBOT/
 ├── fastapi_app.py          # Main FastAPI application
 ├── test_fast_app.py        # Comprehensive test suite
 ├── requirements.txt        # Python dependencies
+├── build.sh               # Render build script
+├── render.yaml            # Render configuration
 ├── README.md              # This file
-├── .env                   # Environment variables (create this)
+├── RENDER_DEPLOY.md       # Render deployment guide
+├── API_EXAMPLES.md        # API usage examples
+├── CONTRIBUTING.md        # Contribution guidelines
+├── CHANGELOG.md           # Version history
+├── LICENSE                # MIT license
+├── .env.example           # Environment variables template
 ├── .gitignore            # Git ignore rules
 └── myenv/                # Virtual environment
 ```
@@ -209,15 +216,16 @@ custom_patterns = [
 
 ## 🌐 Deployment
 
-### Railway (Recommended for Cloud)
-**One-click deployment to Railway:**
+### Render (Recommended - Free Tier Available)
+**Easy deployment to Render:**
 
 1. Push your code to GitHub
-2. Go to [Railway.app](https://railway.app) → Deploy from GitHub
-3. Add your API keys as environment variables
-4. Your app will be live at `https://your-app-name.up.railway.app`
+2. Go to [Render.com](https://render.com) → New Web Service
+3. Connect your repository and configure
+4. Add your API keys as environment variables
+5. Your app will be live at `https://your-app-name.onrender.com`
 
-See [RAILWAY_DEPLOY.md](RAILWAY_DEPLOY.md) for detailed instructions.
+See [RENDER_DEPLOY.md](RENDER_DEPLOY.md) for detailed instructions.
 
 ### Local Development
 ```bash

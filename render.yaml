@@ -1,0 +1,21 @@
+# Render Deployment Configuration
+services:
+  - type: web
+    name: rag-tutor-chatbot
+    env: python
+    plan: free
+    buildCommand: "./build.sh"
+    startCommand: "python fastapi_app.py"
+    healthCheckPath: "/health"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        generateValue: true
+    # Add your environment variables in Render dashboard:
+    # OPENROUTER_API_KEY
+    # GROQ_API_KEY 
+    # HUGGINGFACE_API_KEY
+    # RAPIDAPI_KEY (optional)
+    # GOOGLE_API_KEY (optional)
+    # GOOGLE_CX (optional)
