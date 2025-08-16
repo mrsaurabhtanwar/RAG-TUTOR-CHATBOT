@@ -7,7 +7,7 @@
   "deploy": {
     "startCommand": "python fastapi_app.py",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 100,
+    "healthcheckTimeout": 400,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
