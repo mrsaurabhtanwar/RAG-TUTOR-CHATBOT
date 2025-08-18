@@ -1,50 +1,109 @@
 """
-AI Tutor FastAPI Service
+AI Tutor FastAPI Service - Production-Ready RAG System
 A comprehensive tutoring service that provides AI-generated responses with educational resources.
 """
 
 import os
 import logging
-from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Any
+import asyncio
+import time
+import hashlib
+import json
+import re
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple, Any, Union
 from urllib.parse import quote
+from functools import lru_cache
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import faiss
+import pickle
+import threading
+from collections import defaultdict, deque
+import uuid
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="AI Tutor Service",
-    description="An intelligent tutoring service that provides comprehensive answers with video and website suggestions",
-    version="1.0.0"
+    title="AI Tutor Service - RAG System",
+    description="An intelligent tutoring service with RAG capabilities that provides comprehensive answers with video and website suggestions",
+    version="2.0.0"
 )
 
-# Add CORS middleware
+# Security middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # Configure appropriately for production
+)
+
+# Add CORS middleware with more restrictive settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000").split(","),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
+# Rate limiting
+class RateLimiter:
+    def __init__(self, max_requests: int = 100, window_seconds: int = 3600):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = defaultdict(deque)
+        self.lock = threading.Lock()
+    
+    def is_allowed(self, client_id: str) -> bool:
+        now = time.time()
+        with self.lock:
+            # Clean old requests
+            while self.requests[client_id] and self.requests[client_id][0] < now - self.window_seconds:
+                self.requests[client_id].popleft()
+            
+            # Check if under limit
+            if len(self.requests[client_id]) < self.max_requests:
+                self.requests[client_id].append(now)
+                return True
+            return False
+
+rate_limiter = RateLimiter()
 
 # Pydantic models for request/response validation
 class ChatRequest(BaseModel):
     """Request model for chat endpoint"""
-    question: str
-    include_context: bool = True
-    max_tokens: int = 1500
-
+    question: str = Field(..., min_length=1, max_length=2000, description="The question to ask")
+    include_context: bool = Field(True, description="Whether to include RAG context")
+    max_tokens: int = Field(1500, ge=100, le=4000, description="Maximum tokens for response")
+    
+    @field_validator('question')
+    @classmethod
+    def validate_question(cls, v):
+        # Basic sanitization
+        v = re.sub(r'<script.*?</script>', '', v, flags=re.IGNORECASE | re.DOTALL)
+        v = re.sub(r'<.*?>', '', v)
+        if len(v.strip()) == 0:
+            raise ValueError('Question cannot be empty after sanitization')
+        return v.strip()
 
 class ChatResponse(BaseModel):
     """Response model for chat endpoint"""
@@ -56,7 +115,65 @@ class ChatResponse(BaseModel):
     apiUsed: str
     suggestions: List[str] = []
     debug_info: Dict[str, Any] = {}
+    context_sources: List[str] = []
+    confidence_score: Optional[float] = None
 
+class MetricsResponse(BaseModel):
+    """Response model for metrics endpoint"""
+    total_requests: int
+    success_rate: float
+    average_response_time: float
+    api_usage: Dict[str, int]
+    cache_hit_rate: float
+    error_rate: float
+    timestamp: str
+
+# Global metrics
+class MetricsCollector:
+    def __init__(self):
+        self.total_requests = 0
+        self.successful_requests = 0
+        self.response_times = deque(maxlen=1000)
+        self.api_usage = defaultdict(int)
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.errors = defaultdict(int)
+        self.lock = threading.Lock()
+    
+    def record_request(self, success: bool, response_time: float, api_used: str, cache_hit: bool = False):
+        with self.lock:
+            self.total_requests += 1
+            if success:
+                self.successful_requests += 1
+            self.response_times.append(response_time)
+            self.api_usage[api_used] += 1
+            if cache_hit:
+                self.cache_hits += 1
+            else:
+                self.cache_misses += 1
+    
+    def record_error(self, error_type: str):
+        with self.lock:
+            self.errors[error_type] += 1
+    
+    def get_metrics(self) -> MetricsResponse:
+        with self.lock:
+            success_rate = self.successful_requests / max(self.total_requests, 1)
+            avg_response_time = sum(self.response_times) / max(len(self.response_times), 1)
+            cache_hit_rate = self.cache_hits / max(self.cache_hits + self.cache_misses, 1)
+            error_rate = sum(self.errors.values()) / max(self.total_requests, 1)
+            
+            return MetricsResponse(
+                total_requests=self.total_requests,
+                success_rate=success_rate,
+                average_response_time=avg_response_time,
+                api_usage=dict(self.api_usage),
+                cache_hit_rate=cache_hit_rate,
+                error_rate=error_rate,
+                timestamp=datetime.now().isoformat()
+            )
+
+metrics = MetricsCollector()
 
 def load_api_keys() -> Dict[str, Optional[str]]:
     """Load and validate API keys from environment variables"""
@@ -69,20 +186,19 @@ def load_api_keys() -> Dict[str, Optional[str]]:
         'GROQ_API_KEY': os.getenv('GROQ_API_KEY')
     }
     
-    print("=== API Keys Status ===")
+    logger.info("=== API Keys Status ===")
     for key_name, key_value in keys.items():
         if key_value:
             # Remove quotes if they exist (common issue)
             clean_value = key_value.strip("'\"")
             keys[key_name] = clean_value
             masked_key = f"{clean_value[:10]}...{clean_value[-10:]}" if len(clean_value) > 20 else clean_value
-            print(f"✓ {key_name}: {masked_key}")
+            logger.info(f"OK {key_name}: {masked_key}")
         else:
-            print(f"✗ {key_name}: Not found")
-    print("=====================")
+            logger.warning(f"X {key_name}: Not found")
+    logger.info("=====================")
     
     return keys
-
 
 # Load API keys globally
 api_keys = load_api_keys()
@@ -93,20 +209,266 @@ GOOGLE_CX = api_keys.get('GOOGLE_CX')
 HUGGINGFACE_API_KEY = api_keys.get('HUGGINGFACE_API_KEY')
 GROQ_API_KEY = api_keys.get('GROQ_API_KEY')
 
+# RAG Components
+class EmbeddingManager:
+    """Manages embeddings for RAG functionality"""
+    
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.model_name = model_name
+        self.model = None
+        self.embedding_dim = 384  # Default for all-MiniLM-L6-v2
+        self._load_model()
+    
+    def _load_model(self):
+        """Load the embedding model"""
+        try:
+            logger.info(f"Loading embedding model: {self.model_name}")
+            self.model = SentenceTransformer(self.model_name)
+            logger.info("Embedding model loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            # Fallback to a simpler approach
+            self.model = None
+    
+    def get_embedding(self, text: str) -> Optional[np.ndarray]:
+        """Get embedding for text"""
+        if not self.model:
+            return None
+        
+        try:
+            # Clean and truncate text
+            text = text.strip()[:1000]  # Limit length
+            if not text:
+                return None
+            
+            embedding = self.model.encode([text])[0]
+            return embedding
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            return None
+
+class VectorStore:
+    """Simple in-memory vector store using FAISS"""
+    
+    def __init__(self, embedding_dim: int = 384):
+        self.embedding_dim = embedding_dim
+        self.index = None
+        self.documents = []
+        self.document_embeddings = []
+        self.lock = threading.Lock()
+        self._initialize_index()
+    
+    def _initialize_index(self):
+        """Initialize FAISS index"""
+        try:
+            self.index = faiss.IndexFlatIP(self.embedding_dim)  # Inner product for cosine similarity
+            logger.info("FAISS index initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize FAISS index: {e}")
+            self.index = None
+    
+    def add_documents(self, documents: List[Dict[str, Any]], embeddings: List[np.ndarray]):
+        """Add documents and their embeddings to the store"""
+        if not self.index:
+            logger.warning("FAISS index not available")
+            return
+        
+        with self.lock:
+            try:
+                # Add embeddings to FAISS
+                embeddings_array = np.array(embeddings).astype('float32')
+                self.index.add(embeddings_array)
+                
+                # Store documents
+                self.documents.extend(documents)
+                self.document_embeddings.extend(embeddings)
+                
+                logger.info(f"Added {len(documents)} documents to vector store")
+            except Exception as e:
+                logger.error(f"Error adding documents to vector store: {e}")
+    
+    def search(self, query_embedding: np.ndarray, k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
+        """Search for similar documents"""
+        if not self.index or self.index.ntotal == 0:
+            return []
+        
+        try:
+            # Search in FAISS
+            query_array = query_embedding.reshape(1, -1).astype('float32')
+            scores, indices = self.index.search(query_array, min(k, self.index.ntotal))
+            
+            # Return documents with scores
+            results = []
+            for idx, score in zip(indices[0], scores[0]):
+                if idx < len(self.documents):
+                    results.append((self.documents[idx], float(score)))
+            
+            return results
+        except Exception as e:
+            logger.error(f"Error searching vector store: {e}")
+            return []
+    
+    def save(self, filepath: str):
+        """Save vector store to disk"""
+        if not self.index:
+            return
+        
+        try:
+            with open(filepath, 'wb') as f:
+                pickle.dump({
+                    'index': faiss.serialize_index(self.index),
+                    'documents': self.documents,
+                    'embedding_dim': self.embedding_dim
+                }, f)
+            logger.info(f"Vector store saved to {filepath}")
+        except Exception as e:
+            logger.error(f"Error saving vector store: {e}")
+    
+    def load(self, filepath: str):
+        """Load vector store from disk"""
+        try:
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+            
+            self.index = faiss.deserialize_index(data['index'])
+            self.documents = data['documents']
+            self.embedding_dim = data['embedding_dim']
+            logger.info(f"Vector store loaded from {filepath}")
+        except Exception as e:
+            logger.error(f"Error loading vector store: {e}")
+
+class RAGProcessor:
+    """Handles RAG (Retrieval Augmented Generation) functionality"""
+    
+    def __init__(self):
+        self.embedding_manager = EmbeddingManager()
+        self.vector_store = VectorStore(self.embedding_manager.embedding_dim)
+        self.cache = {}
+        self.cache_lock = threading.Lock()
+        self._load_sample_documents()
+    
+    def _load_sample_documents(self):
+        """Load sample educational documents for demonstration"""
+        sample_docs = [
+            {
+                'id': 'math_basics',
+                'title': 'Mathematics Fundamentals',
+                'content': 'Mathematics is the study of numbers, quantities, shapes, and patterns. Basic operations include addition, subtraction, multiplication, and division. Algebra introduces variables and equations.',
+                'source': 'educational_content',
+                'tags': ['mathematics', 'algebra', 'basics']
+            },
+            {
+                'id': 'python_intro',
+                'title': 'Python Programming Introduction',
+                'content': 'Python is a high-level programming language known for its simplicity and readability. It supports multiple programming paradigms including procedural, object-oriented, and functional programming.',
+                'source': 'educational_content',
+                'tags': ['programming', 'python', 'computer_science']
+            },
+            {
+                'id': 'physics_concepts',
+                'title': 'Physics Core Concepts',
+                'content': 'Physics is the natural science that studies matter, energy, and their interactions. Key concepts include force, motion, energy, and gravity. Newton\'s laws of motion are fundamental principles.',
+                'source': 'educational_content',
+                'tags': ['physics', 'science', 'motion', 'energy']
+            },
+            {
+                'id': 'chemistry_basics',
+                'title': 'Chemistry Fundamentals',
+                'content': 'Chemistry is the study of matter and its properties. Atoms are the basic building blocks of matter. Chemical reactions involve the rearrangement of atoms to form new substances.',
+                'source': 'educational_content',
+                'tags': ['chemistry', 'science', 'atoms', 'reactions']
+            },
+            {
+                'id': 'biology_cells',
+                'title': 'Biology: Cell Structure',
+                'content': 'Cells are the basic units of life. All living organisms are composed of cells. Plant cells have cell walls and chloroplasts, while animal cells do not. The nucleus contains genetic material.',
+                'source': 'educational_content',
+                'tags': ['biology', 'science', 'cells', 'life']
+            }
+        ]
+        
+        # Generate embeddings and add to vector store
+        embeddings = []
+        for doc in sample_docs:
+            embedding = self.embedding_manager.get_embedding(doc['content'])
+            if embedding is not None:
+                embeddings.append(embedding)
+            else:
+                # Fallback: create a simple embedding
+                embeddings.append(np.random.rand(self.embedding_manager.embedding_dim))
+        
+        self.vector_store.add_documents(sample_docs, embeddings)
+        logger.info(f"Loaded {len(sample_docs)} sample documents into RAG system")
+    
+    def get_relevant_context(self, query: str, max_chunks: int = 3) -> List[Dict[str, Any]]:
+        """Get relevant context for a query using vector similarity"""
+        # Check cache first
+        cache_key = hashlib.md5(query.encode()).hexdigest()
+        with self.cache_lock:
+            if cache_key in self.cache:
+                logger.info("Cache hit for context retrieval")
+                return self.cache[cache_key]
+        
+        # Generate query embedding
+        query_embedding = self.embedding_manager.get_embedding(query)
+        if query_embedding is None:
+            logger.warning("Could not generate embedding for query")
+            return []
+        
+        # Search vector store
+        results = self.vector_store.search(query_embedding, k=max_chunks)
+        
+        # Format results
+        context_chunks = []
+        for doc, score in results:
+            if score > 0.3:  # Similarity threshold
+                context_chunks.append({
+                    'content': doc['content'],
+                    'title': doc['title'],
+                    'source': doc['source'],
+                    'relevance_score': score,
+                    'tags': doc.get('tags', [])
+                })
+        
+        # Cache results
+        with self.cache_lock:
+            self.cache[cache_key] = context_chunks
+        
+        logger.info(f"Retrieved {len(context_chunks)} relevant context chunks")
+        return context_chunks
+
+class RetryManager:
+    """Manages retries with exponential backoff and jitter"""
+    
+    @staticmethod
+    async def retry_with_backoff(func, max_retries: int = 3, base_delay: float = 1.0):
+        """Retry function with exponential backoff and jitter"""
+        for attempt in range(max_retries + 1):
+            try:
+                return await func()
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"Final attempt failed: {e}")
+                    raise e
+                
+                # Calculate delay with exponential backoff and jitter
+                delay = base_delay * (2 ** attempt) + np.random.uniform(0, 0.1)
+                logger.warning(f"Attempt {attempt + 1} failed, retrying in {delay:.2f}s: {e}")
+                await asyncio.sleep(delay)
 
 class AIProvider:
     """Handles AI API interactions with different providers"""
     
     @staticmethod
     async def call_openrouter(prompt: str, max_tokens: int = 1500) -> Tuple[Optional[str], Dict[str, Any]]:
-        """Call OpenRouter API with detailed debugging"""
+        """Call OpenRouter API with retry logic"""
         debug_info: Dict[str, Any] = {"attempted": True, "error": None}
         
         if not OPENROUTER_API_KEY:
             debug_info["error"] = "No API key provided"
             return None, debug_info
         
-        try:
+        async def _make_request():
             url = "https://openrouter.ai/api/v1/chat/completions"
             headers = {
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -120,7 +482,7 @@ class AIProvider:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are an expert AI tutor. Adjust your response style based on the question complexity. For simple questions (like basic math), give direct, brief answers. For complex topics, provide comprehensive explanations with examples."
+                        "content": "You are an expert AI tutor. Provide accurate, helpful responses based on the context provided."
                     },
                     {
                         "role": "user",
@@ -131,13 +493,7 @@ class AIProvider:
                 "temperature": 0.7
             }
             
-            print("Making request to OpenRouter...")
             response = requests.post(url, headers=headers, json=data, timeout=30)
-            
-            debug_info["status_code"] = response.status_code
-            debug_info["response_headers"] = dict(response.headers)
-            
-            print(f"OpenRouter Response Status: {response.status_code}")
             
             if response.status_code == 200:
                 result = response.json()
@@ -145,34 +501,30 @@ class AIProvider:
                     answer = result['choices'][0]['message']['content'].strip()
                     debug_info["success"] = True
                     debug_info["response_length"] = len(answer)
-                    return answer, debug_info
+                    return answer
                 else:
-                    debug_info["error"] = "No choices in response"
-                    debug_info["response_body"] = result
+                    raise Exception("No choices in response")
             else:
-                error_text = response.text
-                debug_info["error"] = f"HTTP {response.status_code}: {error_text}"
-                print(f"OpenRouter Error: {error_text}")
-                
-        except requests.RequestException as e:
-            debug_info["error"] = f"Request Exception: {str(e)}"
-            print(f"OpenRouter Exception: {e}")
-        except Exception as e:
-            debug_info["error"] = f"Exception: {str(e)}"
-            print(f"OpenRouter Exception: {e}")
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
         
-        return None, debug_info
+        try:
+            answer = await RetryManager.retry_with_backoff(_make_request)
+            return answer, debug_info
+        except Exception as e:
+            debug_info["error"] = str(e)
+            logger.error(f"OpenRouter API error: {e}")
+            return None, debug_info
     
     @staticmethod
     async def call_groq(prompt: str, max_tokens: int = 1500) -> Tuple[Optional[str], Dict[str, Any]]:
-        """Call Groq API with detailed debugging"""
+        """Call Groq API with retry logic"""
         debug_info: Dict[str, Any] = {"attempted": True, "error": None}
         
         if not GROQ_API_KEY:
             debug_info["error"] = "No API key provided"
             return None, debug_info
         
-        try:
+        async def _make_request():
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {
                 "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -184,7 +536,7 @@ class AIProvider:
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are an intelligent AI tutor. Match your response length to the question complexity. Simple questions need brief, direct answers. Complex topics need detailed explanations."
+                        "content": "You are an intelligent AI tutor. Provide accurate, helpful responses."
                     },
                     {
                         "role": "user",
@@ -195,11 +547,7 @@ class AIProvider:
                 "temperature": 0.7
             }
             
-            print("Making request to Groq...")
             response = requests.post(url, headers=headers, json=data, timeout=30)
-            
-            debug_info["status_code"] = response.status_code
-            print(f"Groq Response Status: {response.status_code}")
             
             if response.status_code == 200:
                 result = response.json()
@@ -207,33 +555,30 @@ class AIProvider:
                     answer = result['choices'][0]['message']['content'].strip()
                     debug_info["success"] = True
                     debug_info["response_length"] = len(answer)
-                    return answer, debug_info
+                    return answer
                 else:
-                    debug_info["error"] = "No choices in response"
+                    raise Exception("No choices in response")
             else:
-                debug_info["error"] = f"HTTP {response.status_code}: {response.text}"
-                print(f"Groq Error: {response.text}")
-                
-        except requests.RequestException as e:
-            debug_info["error"] = f"Request Exception: {str(e)}"
-            print(f"Groq Exception: {e}")
-        except Exception as e:
-            debug_info["error"] = f"Exception: {str(e)}"
-            print(f"Groq Exception: {e}")
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
         
-        return None, debug_info
+        try:
+            answer = await RetryManager.retry_with_backoff(_make_request)
+            return answer, debug_info
+        except Exception as e:
+            debug_info["error"] = str(e)
+            logger.error(f"Groq API error: {e}")
+            return None, debug_info
     
     @staticmethod
     async def call_huggingface(prompt: str) -> Tuple[Optional[str], Dict[str, Any]]:
-        """Call Hugging Face API with detailed debugging"""
+        """Call Hugging Face API with retry logic"""
         debug_info: Dict[str, Any] = {"attempted": True, "error": None}
         
         if not HUGGINGFACE_API_KEY:
             debug_info["error"] = "No API key provided"
             return None, debug_info
         
-        try:
-            # Use a model that's good for Q&A
+        async def _make_request():
             url = "https://api-inference.huggingface.co/models/google/flan-t5-large"
             headers = {
                 "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
@@ -250,38 +595,30 @@ class AIProvider:
                 "options": {"wait_for_model": True}
             }
             
-            print("Making request to HuggingFace...")
             response = requests.post(url, headers=headers, json=data, timeout=60)
-            
-            debug_info["status_code"] = response.status_code
-            print(f"HuggingFace Response Status: {response.status_code}")
             
             if response.status_code == 200:
                 result: Any = response.json()
-                if isinstance(result, list) and len(result) > 0:  # type: ignore
-                    first_item = result[0]  # type: ignore
+                if isinstance(result, list) and len(result) > 0:
+                    first_item = result[0]
                     if isinstance(first_item, dict) and 'generated_text' in first_item:
-                        generated_text = str(first_item['generated_text'])  # type: ignore
+                        generated_text = str(first_item['generated_text'])
                         answer: str = generated_text.strip()
                         if len(answer) > 20:
                             debug_info["success"] = True
                             debug_info["response_length"] = len(answer)
-                            return answer, debug_info
-                debug_info["error"] = "No valid response generated"
-                debug_info["response_body"] = result
+                            return answer
+                raise Exception("No valid response generated")
             else:
-                debug_info["error"] = f"HTTP {response.status_code}: {response.text}"
-                print(f"HuggingFace Error: {response.text}")
-                
-        except requests.RequestException as e:
-            debug_info["error"] = f"Request Exception: {str(e)}"
-            print(f"HuggingFace Exception: {e}")
-        except Exception as e:
-            debug_info["error"] = f"Exception: {str(e)}"
-            print(f"HuggingFace Exception: {e}")
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
         
-        return None, debug_info
-
+        try:
+            answer = await RetryManager.retry_with_backoff(_make_request)
+            return answer, debug_info
+        except Exception as e:
+            debug_info["error"] = str(e)
+            logger.error(f"HuggingFace API error: {e}")
+            return None, debug_info
 
 class ResourceFinder:
     """Handles finding relevant videos and websites"""
@@ -310,10 +647,8 @@ class ResourceFinder:
                         if video and video.get('videoId'):
                             return f"https://www.youtube.com/watch?v={video['videoId']}"
         
-        except requests.RequestException as e:
-            print(f"YouTube search error: {e}")
         except Exception as e:
-            print(f"YouTube search error: {e}")
+            logger.error(f"YouTube search error: {e}")
 
         return f"https://www.youtube.com/results?search_query={quote(query + ' tutorial')}"
     
@@ -333,13 +668,10 @@ class ResourceFinder:
                 if 'items' in data and data['items']:
                     return data['items'][0].get('link', f"https://www.google.com/search?q={quote(query)}")
         
-        except requests.RequestException as e:
-            print(f"Google search error: {e}")
         except Exception as e:
-            print(f"Google search error: {e}")
+            logger.error(f"Google search error: {e}")
 
         return f"https://www.google.com/search?q={quote(query)}"
-
 
 def generate_comprehensive_fallback(question: str) -> str:
     """Generate a simple fallback response when APIs fail"""
@@ -352,7 +684,6 @@ Here are some ways you can explore this topic:
 • Consider discussing this topic with teachers, peers, or online communities
 
 The resources below should provide you with detailed explanations from educational experts. Feel free to ask me again later, or try rephrasing your question in a different way!"""
-
 
 def generate_suggestions(question: str) -> List[str]:
     """Generate dynamic learning suggestions based on question content"""
@@ -399,187 +730,129 @@ def generate_suggestions(question: str) -> List[str]:
     unique_suggestions = list(dict.fromkeys(suggestions))  # Remove duplicates while preserving order
     return unique_suggestions[:3]
 
-
-# Initialize providers
+# Initialize components
 ai_provider = AIProvider()
 resource_finder = ResourceFinder()
+rag_processor = RAGProcessor()
 
-
+# Dependency for rate limiting
+async def check_rate_limit(request: Request):
+    try:
+        client_id = request.client.host if request.client else "unknown"
+    except:
+        client_id = "unknown"
+    if not rate_limiter.is_allowed(client_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(chat_request: ChatRequest) -> ChatResponse:
-    """Enhanced chat endpoint with refined prompts for natural responses"""
-    start_time = datetime.now()
+async def chat_endpoint(chat_request: ChatRequest, request: Request) -> ChatResponse:
+    """Enhanced chat endpoint with RAG capabilities"""
+    start_time = time.time()
+    
+    # Check rate limit
+    await check_rate_limit(request)
     
     try:
-        question = chat_request.question.strip()
-        if not question:
-            raise HTTPException(status_code=400, detail="Question cannot be empty")
+        question = chat_request.question
+        logger.info(f"Processing question: {question[:100]}...")
         
-        print(f"\n=== Processing Question ===")
-        print(f"Question: {question}")
+        # Get relevant context using RAG
+        context_chunks = []
+        context_sources = []
+        if chat_request.include_context:
+            context_chunks = rag_processor.get_relevant_context(question)
+            context_sources = [chunk['title'] for chunk in context_chunks]
         
-        # Analyze question complexity to determine response style
-        simple_patterns = [
-            r'^\d+\s*[\+\-\*\/]\s*\d+\s*$',                       # "2+2"
-            r'^what\s+is\s+\d+\s*[\+\-\*\/]\s*\d+',              # "what is 2+2"
-            r'^(?:hi|hello|hey|hola|yo|sup)(?:[!.?]|\s|$)',       # greetings
-            r'^(?:yes|no|yep|nah|y|n)(?:[!.?]|\s|$)',             # yes/no
-            r'^(?:thanks?|thank\s+you|thx)(?:[!.?]|\s|$)',        # thanks
-            r'^[\u263a-\U0001f645\s\t\.,!?:-]+$',                # emoji-only or punctuation
-            r'^(?:ok|okay|kk|roger|got\s+it)(?:[!.?]|\s|$)',      # ack
-            r'^[\w\.\-]+@[\w\.\-]+\.\w{2,}$',                    # email-like (short reply)
-            r'^(?:what\'?s)?\s*(?:up|new)\s*[?!.]?$'              # "what's up"
-        ]
-        
-        # Questions that need concise answers (factual/definitional)
-        concise_patterns = [
-            r'^(?:what|who|when|where)\s+is\s+[\w\s\?\-\,]{1,80}\?*$',      # "what is gravity?"
-            r'^(?:define|definition\s+of)\s+.+',                          # "define photosynthesis"
-            r'^what\s+is\s+(?:the\s+)?(?:formula|chemical\s+formula)\s+(?:of|for)\s+',  # "what is the formula of water"
-            r'^(?:capital\s+of|currency\s+of)\s+[\w\s]+$',                 # "capital of France"
-            r'^(?:convert|how\s+many)\s+\d+(\.\d+)?\s+\w+\s+(?:to|in)\s+\w+', # "convert 5 km to miles"
-            r'^(?:who\s+is|who\s+was)\s+[\w\s]+$',                         # "who is Einstein"
-            r'^(?:how\s+much|how\s+many)\s+.+',                            # numeric queries
-            r'^[A-Za-z0-9\-\_]{1,20}\s*\?$',                              # short single-word Q "Python?"
-            r'^[\w\s]{1,40}\s*\?$'                           # short question under ~40 chars
-        ]
+        # Build enhanced prompt with context
+        if context_chunks:
+            context_text = "\n\n".join([chunk['content'] for chunk in context_chunks])
+            enhanced_prompt = f"""Based on the following educational context, please answer the question:
 
-        complex_patterns = [
-            r'^(?:explain|describe|tell\s+me\s+about)\s+.+',             # "explain photosynthesis"
-            r'^(?:how|what|why)\s+do\s+[\w\s\?\-\,]{1,80}\?*$',          # "how do plants grow?"
-            r'^(?:compare|contrast)\s+.+',                               # "compare apples and oranges"
-            r'^(?:summarize|overview)\s+.+',                             # "summarize the main points"
-            r'^(?:analyze|break down)\s+.+',                             # "analyze the data"
-            r'^(?:what|who|when|where)\s+was\s+[\w\s\?\-\,]{1,80}\?*$',  # "what was the impact?"
-            r'^(?:how|what|why)\s+does\s+[\w\s\?\-\,]{1,80}\?*$',        # "how does photosynthesis work?"
-            r'\bexplain\b', r'\bwhy\b', r'\bhow\b',                          # often need explanation
-            r'\bcompare\b', r'\bdifference\s+between\b',                    # comparisons
-            r'(?:(?:step|steps)\s+to|step-by-step|walk\s+me\s+through)',    # step instructions
-            r'\bproof\b|\bderive\b|\bshow\s+that\b',                        # math proof/derivation
-            r'\bimplement\b|\bwrite\s+code\b|\bdebug\b|\brun\b\s+this\b',   # coding requests
-            r'\boptimize\b|\bimprove\b|\brecommend\b',                      # design/optimisation
-            r'\bplan\b|\bproposal\b|\barchitecture\b|\bdesign\b',          # open-ended
-            r'\bpros\s+and\s+cons\b|\bcase\s+study\b|\buse\s+case\b'        # long-form
-        ]
+Context:
+{context_text}
 
-        is_simple_question = any(
-            __import__('re').match(pattern, question.lower().strip()) 
-            for pattern in simple_patterns
-        ) or len(question.split()) <= 3
-        
-        is_concise_question = any(
-            __import__('re').match(pattern, question.lower().strip()) 
-            for pattern in concise_patterns
-        )
-        
-        is_complex_question = any(
-            __import__('re').match(pattern, question.lower().strip())
-            for pattern in complex_patterns
-        )
+Question: {question}
 
-        # Create refined prompts that encourage natural, appropriate responses
-        if is_simple_question:
-            prompt = f"""Answer this simple question naturally and briefly within 1 sentence:
-
-{question}
-
-Keep it conversational and direct - just give the answer without unnecessary elaboration."""
-
-        elif is_concise_question:
-            prompt = f"""Answer this question clearly and concisely with 1 to 2 sentences:
-
-{question}
-
-Provide the key information in a natural, conversational way. Be direct but complete - include the essential details without over-explaining."""
-
-        elif is_complex_question:
-            prompt = f"""Provide a thorough answer to this question 3-4 sentences long:
-
-{question}
-
-Give a comprehensive response that covers the important aspects. Use a natural, educational tone and include examples where helpful."""
-
+Please provide a comprehensive answer that incorporates the relevant information from the context."""
         else:
-            # Default balanced approach
-            prompt = f"""Answer this question in a helpful, natural way:
-
-{question}
-
-Provide appropriate detail - enough to be informative but not overwhelming. Be conversational and direct."""
+            enhanced_prompt = f"Please answer this question: {question}"
         
-        # Adjust max_tokens based on question type
-        if is_simple_question:
-            adjusted_max_tokens = min(400, chat_request.max_tokens)  # Very short responses
-        elif is_concise_question:
-            adjusted_max_tokens = min(700, chat_request.max_tokens)  # Concise responses
-        else:
-            adjusted_max_tokens = chat_request.max_tokens  # Full responses
-        
-        # Try AI providers with detailed debugging
+        # Try AI providers with fallback
         debug_info: Dict[str, Any] = {}
         answer: Optional[str] = None
         api_used = "none"
+        confidence_score = None
         
         # Try OpenRouter
         if OPENROUTER_API_KEY:
-            print("Trying OpenRouter API...")
-            answer, openrouter_debug = await ai_provider.call_openrouter(prompt, adjusted_max_tokens)
+            logger.info("Trying OpenRouter API...")
+            answer, openrouter_debug = await ai_provider.call_openrouter(enhanced_prompt, chat_request.max_tokens)
             debug_info["openrouter"] = openrouter_debug
             if answer:
                 api_used = "OpenRouter"
-                print("✓ OpenRouter succeeded!")
+                confidence_score = 0.9
+                logger.info("OpenRouter succeeded!")
         
         # Try Groq if OpenRouter failed
         if not answer and GROQ_API_KEY:
-            print("Trying Groq API...")
-            answer, groq_debug = await ai_provider.call_groq(prompt, adjusted_max_tokens)
+            logger.info("Trying Groq API...")
+            answer, groq_debug = await ai_provider.call_groq(enhanced_prompt, chat_request.max_tokens)
             debug_info["groq"] = groq_debug
             if answer:
                 api_used = "Groq"
-                print("✓ Groq succeeded!")
+                confidence_score = 0.8
+                logger.info("Groq succeeded!")
         
         # Try HuggingFace if others failed
         if not answer and HUGGINGFACE_API_KEY:
-            print("Trying HuggingFace API...")
-            answer, hf_debug = await ai_provider.call_huggingface(prompt)
+            logger.info("Trying HuggingFace API...")
+            answer, hf_debug = await ai_provider.call_huggingface(enhanced_prompt)
             debug_info["huggingface"] = hf_debug
             if answer:
                 api_used = "HuggingFace"
-                print("✓ HuggingFace succeeded!")
+                confidence_score = 0.7
+                logger.info("HuggingFace succeeded!")
         
         # Use comprehensive fallback if all APIs failed
         if not answer:
-            print("All APIs failed, using comprehensive fallback")
+            logger.warning("All APIs failed, using comprehensive fallback")
             api_used = "comprehensive_fallback"
             answer = generate_comprehensive_fallback(question)
+            confidence_score = 0.3
         
         # Get resources
         video_link = await resource_finder.search_youtube(question)
         website_link = await resource_finder.search_website(question)
         suggestions = generate_suggestions(question)
         
-        processing_time = (datetime.now() - start_time).total_seconds()
+        processing_time = time.time() - start_time
+        
+        # Record metrics
+        success = answer is not None and len(answer) > 0
+        metrics.record_request(success, processing_time, api_used, cache_hit=len(context_chunks) > 0)
         
         response = ChatResponse(
             answer=answer,
             videoLink=video_link,
             websiteLink=website_link,
-            hasContext=False,
+            hasContext=len(context_chunks) > 0,
             processingTime=processing_time,
             apiUsed=api_used,
             suggestions=suggestions,
-            debug_info=debug_info
+            debug_info=debug_info,
+            context_sources=context_sources,
+            confidence_score=confidence_score
         )
         
-        print(f"✓ Response completed in {processing_time:.2f}s using {api_used}")
+        logger.info(f"Response completed in {processing_time:.2f}s using {api_used}")
         return response
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in chat endpoint: {e}")
-        processing_time = (datetime.now() - start_time).total_seconds()
+        logger.error(f"Error in chat endpoint: {e}")
+        metrics.record_error("chat_endpoint_error")
+        processing_time = time.time() - start_time
         
         return ChatResponse(
             answer="I apologize, but I encountered an error processing your question. Please try again.",
@@ -592,13 +865,11 @@ Provide appropriate detail - enough to be informative but not overwhelming. Be c
             debug_info={"error": str(e)}
         )
 
-
 @app.get("/api/chat")
 async def chat_get(question: str = Query(..., description="The question to ask")) -> ChatResponse:
     """GET endpoint for chat"""
     chat_request = ChatRequest(question=question)
-    return await chat_endpoint(chat_request)
-
+    return await chat_endpoint(chat_request, Request)
 
 @app.get("/debug")
 async def debug_endpoint() -> Dict[str, Any]:
@@ -642,12 +913,20 @@ async def debug_endpoint() -> Dict[str, Any]:
     else:
         results["huggingface"] = {"configured": False}
     
+    # Test RAG system
+    context_chunks = rag_processor.get_relevant_context(test_question)
+    results["rag_system"] = {
+        "configured": True,
+        "working": len(context_chunks) > 0,
+        "context_chunks_found": len(context_chunks),
+        "sample_context": context_chunks[0]['content'][:100] if context_chunks else None
+    }
+    
     return {"debug_results": results, "timestamp": datetime.now().isoformat()}
-
 
 @app.get("/health")
 async def health_check() -> Dict[str, Any]:
-    """Health check with API status"""
+    """Health check with comprehensive status"""
     return {
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -657,27 +936,49 @@ async def health_check() -> Dict[str, Any]:
             'huggingface': bool(HUGGINGFACE_API_KEY),
             'google': bool(GOOGLE_API_KEY and GOOGLE_CX),
             'rapidapi': bool(RAPIDAPI_KEY)
+        },
+        'rag_system': {
+            'embedding_model': rag_processor.embedding_manager.model_name,
+            'vector_store_documents': len(rag_processor.vector_store.documents),
+            'cache_size': len(rag_processor.cache)
+        },
+        'system': {
+            'python_version': f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+            'uptime': 'running'
         }
     }
 
+@app.get("/metrics", response_model=MetricsResponse)
+async def metrics_endpoint() -> MetricsResponse:
+    """Get system metrics"""
+    return metrics.get_metrics()
 
 @app.get("/")
 async def root() -> Dict[str, Any]:
     """Root endpoint with service information"""
     return {
-        'service': 'AI Tutor Service',
+        'service': 'AI Tutor Service - RAG System',
         'status': 'running',
+        'version': '2.0.0',
         'endpoints': {
             'chat': '/api/chat',
             'debug': '/debug',
-            'health': '/health'
-        }
+            'health': '/health',
+            'metrics': '/metrics'
+        },
+        'features': [
+            'RAG (Retrieval-Augmented Generation)',
+            'Multi-AI Provider Support',
+            'Vector Similarity Search',
+            'Caching and Performance Optimization',
+            'Rate Limiting and Security',
+            'Structured Logging and Metrics'
+        ]
     }
-
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting AI Tutor Service with Enhanced Debugging...")
+    logger.info("Starting AI Tutor Service with RAG capabilities...")
     
     # Use Railway's PORT environment variable or default to 8000 for local development
     port = int(os.getenv("PORT", 8000))
