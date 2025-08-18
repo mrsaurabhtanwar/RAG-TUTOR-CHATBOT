@@ -4,6 +4,7 @@ A comprehensive tutoring service that provides AI-generated responses with educa
 """
 
 import os
+import sys
 import logging
 import asyncio
 import time
@@ -21,9 +22,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-import numpy as np
-from sentence_transformers import SentenceTransformer
-import faiss
 import pickle
 import threading
 from collections import defaultdict, deque
@@ -42,6 +40,20 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Optional ML dependencies - fallback to basic mode if not available
+try:
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    ML_AVAILABLE = True
+    logger.info("ML dependencies loaded successfully")
+except ImportError as e:
+    logger.warning(f"ML dependencies not available: {e}. Running in basic mode.")
+    ML_AVAILABLE = False
+    np = None
+    SentenceTransformer = None
+    faiss = None
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -217,10 +229,16 @@ class EmbeddingManager:
         self.model_name = model_name
         self.model = None
         self.embedding_dim = 384  # Default for all-MiniLM-L6-v2
-        self._load_model()
+        if ML_AVAILABLE:
+            self._load_model()
+        else:
+            logger.warning("ML dependencies not available. RAG functionality disabled.")
     
     def _load_model(self):
         """Load the embedding model"""
+        if not ML_AVAILABLE:
+            return
+            
         try:
             logger.info(f"Loading embedding model: {self.model_name}")
             self.model = SentenceTransformer(self.model_name)
@@ -230,9 +248,9 @@ class EmbeddingManager:
             # Fallback to a simpler approach
             self.model = None
     
-    def get_embedding(self, text: str) -> Optional[np.ndarray]:
+    def get_embedding(self, text: str) -> Optional[Any]:
         """Get embedding for text"""
-        if not self.model:
+        if not ML_AVAILABLE or not self.model:
             return None
         
         try:
@@ -260,6 +278,10 @@ class VectorStore:
     
     def _initialize_index(self):
         """Initialize FAISS index"""
+        if not ML_AVAILABLE:
+            logger.warning("FAISS not available - vector store disabled")
+            return
+            
         try:
             self.index = faiss.IndexFlatIP(self.embedding_dim)  # Inner product for cosine similarity
             logger.info("FAISS index initialized")
@@ -267,9 +289,9 @@ class VectorStore:
             logger.error(f"Failed to initialize FAISS index: {e}")
             self.index = None
     
-    def add_documents(self, documents: List[Dict[str, Any]], embeddings: List[np.ndarray]):
+    def add_documents(self, documents: List[Dict[str, Any]], embeddings: List[Any]):
         """Add documents and their embeddings to the store"""
-        if not self.index:
+        if not ML_AVAILABLE or not self.index:
             logger.warning("FAISS index not available")
             return
         
@@ -287,7 +309,7 @@ class VectorStore:
             except Exception as e:
                 logger.error(f"Error adding documents to vector store: {e}")
     
-    def search(self, query_embedding: np.ndarray, k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
+    def search(self, query_embedding: Optional[Any], k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
         """Search for similar documents"""
         if not self.index or self.index.ntotal == 0:
             return []
@@ -733,7 +755,18 @@ def generate_suggestions(question: str) -> List[str]:
 # Initialize components
 ai_provider = AIProvider()
 resource_finder = ResourceFinder()
-rag_processor = RAGProcessor()
+
+# Initialize RAG processor only if ML dependencies are available
+if ML_AVAILABLE:
+    try:
+        rag_processor = RAGProcessor()
+        logger.info("RAG processor initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize RAG processor: {e}")
+        rag_processor = None
+else:
+    rag_processor = None
+    logger.info("RAG functionality disabled - running in basic mode")
 
 # Dependency for rate limiting
 async def check_rate_limit(request: Request):
@@ -759,9 +792,14 @@ async def chat_endpoint(chat_request: ChatRequest, request: Request) -> ChatResp
         # Get relevant context using RAG
         context_chunks = []
         context_sources = []
-        if chat_request.include_context:
-            context_chunks = rag_processor.get_relevant_context(question)
-            context_sources = [chunk['title'] for chunk in context_chunks]
+        if chat_request.include_context and rag_processor:
+            try:
+                context_chunks = rag_processor.get_relevant_context(question)
+                context_sources = [chunk['title'] for chunk in context_chunks]
+            except Exception as e:
+                logger.error(f"RAG context retrieval failed: {e}")
+                context_chunks = []
+                context_sources = []
         
         # Build enhanced prompt with context
         if context_chunks:
@@ -914,13 +952,23 @@ async def debug_endpoint() -> Dict[str, Any]:
         results["huggingface"] = {"configured": False}
     
     # Test RAG system
-    context_chunks = rag_processor.get_relevant_context(test_question)
-    results["rag_system"] = {
-        "configured": True,
-        "working": len(context_chunks) > 0,
-        "context_chunks_found": len(context_chunks),
-        "sample_context": context_chunks[0]['content'][:100] if context_chunks else None
-    }
+    if rag_processor:
+        try:
+            context_chunks = rag_processor.get_relevant_context(test_question)
+            results["rag_system"] = {
+                "configured": True,
+                "working": len(context_chunks) > 0,
+                "context_chunks_found": len(context_chunks),
+                "sample_context": context_chunks[0]['content'][:100] if context_chunks else None
+            }
+        except Exception as e:
+            results["rag_system"] = {
+                "configured": True,
+                "working": False,
+                "error": str(e)
+            }
+    else:
+        results["rag_system"] = {"configured": False, "reason": "ML dependencies not available"}
     
     return {"debug_results": results, "timestamp": datetime.now().isoformat()}
 
@@ -938,12 +986,13 @@ async def health_check() -> Dict[str, Any]:
             'rapidapi': bool(RAPIDAPI_KEY)
         },
         'rag_system': {
-            'embedding_model': rag_processor.embedding_manager.model_name,
-            'vector_store_documents': len(rag_processor.vector_store.documents),
-            'cache_size': len(rag_processor.cache)
+            'embedding_model': rag_processor.embedding_manager.model_name if rag_processor else "disabled",
+            'vector_store_documents': len(rag_processor.vector_store.documents) if rag_processor else 0,
+            'cache_size': len(rag_processor.cache) if rag_processor else 0,
+            'ml_available': ML_AVAILABLE
         },
         'system': {
-            'python_version': f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+            'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             'uptime': 'running'
         }
     }
