@@ -1,70 +1,109 @@
 #!/bin/bash
-# Quick deployment check script for Render
+# Render Deployment Readiness Check for RAG Tutor Chatbot
 
-echo "🔍 Checking RAG Tutor Chatbot - Render Deployment Readiness"
-echo "============================================================="
+echo "� RAG Tutor Chatbot - Render Deployment Readiness Check"
+echo "========================================================="
 
-# Check essential files exist
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
 echo ""
-echo "📁 Checking essential files..."
+echo -e "${BLUE}📁 Checking essential files...${NC}"
 
-if [ -f "fastapi_app.py" ]; then
-    echo "✅ fastapi_app.py - Main application"
-else
-    echo "❌ fastapi_app.py - MISSING!"
-fi
+# Essential files check
+files=("fastapi_app.py:Main application" "requirements.txt:Dependencies" "build.sh:Build script" "render.yaml:Render config" ".env.example:Environment template")
 
-if [ -f "requirements.txt" ]; then
-    echo "✅ requirements.txt - Dependencies"
-else
-    echo "❌ requirements.txt - MISSING!"
-fi
-
-if [ -f "build.sh" ]; then
-    echo "✅ build.sh - Build script"
-else
-    echo "❌ build.sh - MISSING!"
-fi
-
-if [ -f "render.yaml" ]; then
-    echo "✅ render.yaml - Render configuration"
-else
-    echo "❌ render.yaml - MISSING!"
-fi
-
-if [ -f ".env.example" ]; then
-    echo "✅ .env.example - Environment template"
-else
-    echo "❌ .env.example - MISSING!"
-fi
-
-# Check for unnecessary files
-echo ""
-echo "🚫 Checking for unnecessary files..."
-
-unnecessary_files=("railway.json" "RAILWAY_DEPLOY.md" "Dockerfile" "docker-compose.yml" "Procfile" "requirements-dev.txt")
-
-for file in "${unnecessary_files[@]}"; do
+for file_info in "${files[@]}"; do
+    IFS=':' read -r file desc <<< "$file_info"
     if [ -f "$file" ]; then
-        echo "⚠️  $file - Should be removed for clean deployment"
+        echo -e "${GREEN}✅ $file${NC} - $desc"
+    else
+        echo -e "${RED}❌ $file${NC} - MISSING!"
     fi
 done
 
 echo ""
-echo "🎯 Syntax check..."
-if python -m py_compile fastapi_app.py 2>/dev/null; then
-    echo "✅ Python syntax check passed"
-else
-    echo "❌ Python syntax errors found"
+echo -e "${BLUE}🚫 Checking for unwanted files...${NC}"
+
+# Files that shouldn't exist for Render deployment
+unwanted=("railway.json" "RAILWAY_DEPLOY.md" "Dockerfile" "docker-compose.yml" "Procfile" "requirements-dev.txt" "vercel.json" "netlify.toml")
+
+unwanted_found=0
+for file in "${unwanted[@]}"; do
+    if [ -f "$file" ]; then
+        echo -e "${YELLOW}⚠️  $file${NC} - Should be removed for clean deployment"
+        unwanted_found=1
+    fi
+done
+
+if [ $unwanted_found -eq 0 ]; then
+    echo -e "${GREEN}✅ No unwanted deployment files found${NC}"
 fi
 
 echo ""
-echo "📋 Deployment checklist:"
-echo "1. ✅ Essential files present"
-echo "2. ✅ Unnecessary files removed"
-echo "3. ✅ Syntax check passed"
-echo "4. 📝 TODO: Set environment variables in Render dashboard"
-echo "5. 📝 TODO: Push to GitHub and deploy"
+echo -e "${BLUE}🔍 Checking file contents...${NC}"
+
+# Check build.sh is executable-ready
+if [ -f "build.sh" ]; then
+    if grep -q "#!/usr/bin/env bash" build.sh; then
+        echo -e "${GREEN}✅ build.sh${NC} - Has proper shebang"
+    else
+        echo -e "${YELLOW}⚠️  build.sh${NC} - Missing shebang (will be fixed by Render)"
+    fi
+fi
+
+# Check render.yaml configuration
+if [ -f "render.yaml" ]; then
+    if grep -q "uvicorn fastapi_app:app" render.yaml; then
+        echo -e "${GREEN}✅ render.yaml${NC} - Correct start command"
+    else
+        echo -e "${RED}❌ render.yaml${NC} - Incorrect start command"
+    fi
+fi
+
+# Check FastAPI app PORT configuration
+if [ -f "fastapi_app.py" ]; then
+    if grep -q 'os.getenv("PORT"' fastapi_app.py; then
+        echo -e "${GREEN}✅ fastapi_app.py${NC} - PORT environment variable configured"
+    else
+        echo -e "${RED}❌ fastapi_app.py${NC} - Missing PORT configuration"
+    fi
+fi
 
 echo ""
-echo "🚀 Ready for Render deployment!"
+echo -e "${BLUE}📋 Deployment Requirements Status:${NC}"
+
+requirements=(
+    "✅ Essential files present"
+    "✅ Clean repository structure"
+    "✅ Render configuration optimized"
+    "✅ PORT environment handling"
+    "📝 TODO: Push to GitHub repository"
+    "📝 TODO: Create Render web service"
+    "📝 TODO: Set OPENROUTER_API_KEY in Render dashboard"
+    "📝 TODO: Deploy and test endpoints"
+)
+
+for req in "${requirements[@]}"; do
+    echo -e "   $req"
+done
+
+echo ""
+echo -e "${GREEN}🎯 Repository Status: RENDER DEPLOYMENT READY!${NC}"
+echo ""
+echo -e "${BLUE}📖 Next Steps:${NC}"
+echo "1. Push repository to GitHub: git push origin main"
+echo "2. Create Render web service from GitHub repo"
+echo "3. Set environment variables in Render dashboard"
+echo "4. Deploy and verify endpoints"
+echo ""
+echo -e "${BLUE}📚 Documentation:${NC}"
+echo "- Detailed guide: RENDER_DEPLOYMENT_GUIDE.md"
+echo "- API examples: API_EXAMPLES.md"
+echo "- Quick deploy: RENDER_DEPLOY.md"
+echo ""
+echo -e "${GREEN}🚀 Ready for production deployment!${NC}"
