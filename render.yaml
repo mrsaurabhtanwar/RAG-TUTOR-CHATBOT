@@ -1,4 +1,4 @@
-# Render Deployment Configuration
+# Render Free Tier Configuration
 services:
   - type: web
     name: rag-tutor-chatbot

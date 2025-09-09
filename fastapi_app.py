@@ -3,6 +3,8 @@ AI Tutor FastAPI Service - Production-Ready RAG System
 A comprehensive tutoring service that provides AI-generated responses with educational resources.
 """
 
+# type: ignore
+
 import os
 import sys
 import logging
@@ -12,7 +14,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple, Any, Union
+from typing import List, Dict, Optional, Tuple, Any, Union, TYPE_CHECKING
 from urllib.parse import quote
 from functools import lru_cache
 import requests
@@ -42,18 +44,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Optional ML dependencies - fallback to basic mode if not available
+ML_AVAILABLE = False
+np: Any = None
+SentenceTransformer: Any = None
+faiss: Any = None
+if TYPE_CHECKING:
+    # Help type-checkers without requiring runtime packages
+    from sentence_transformers import SentenceTransformer  # type: ignore
+    import faiss  # type: ignore
+
 try:
     import numpy as np
-    from sentence_transformers import SentenceTransformer
-    import faiss
-    ML_AVAILABLE = True
+    from sentence_transformers import SentenceTransformer  # type: ignore
+    import faiss  # type: ignore
+    globals()['ML_AVAILABLE'] = True
     logger.info("ML dependencies loaded successfully")
 except ImportError as e:
     logger.warning(f"ML dependencies not available: {e}. Running in basic mode.")
-    ML_AVAILABLE = False
-    np = None
-    SentenceTransformer = None
-    faiss = None
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -82,21 +89,25 @@ class RateLimiter:
     def __init__(self, max_requests: int = 100, window_seconds: int = 3600):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self.requests = defaultdict(deque)
+
+        # map client_id -> deque of request timestamps
+        # Using plain runtime collections to avoid heavy typing in method scope
+        self.requests = defaultdict(deque)  # type: ignore
         self.lock = threading.Lock()
-    
+
     def is_allowed(self, client_id: str) -> bool:
         now = time.time()
         with self.lock:
             # Clean old requests
             while self.requests[client_id] and self.requests[client_id][0] < now - self.window_seconds:
                 self.requests[client_id].popleft()
-            
+
             # Check if under limit
             if len(self.requests[client_id]) < self.max_requests:
                 self.requests[client_id].append(now)
                 return True
             return False
+
 
 rate_limiter = RateLimiter()
 
@@ -109,7 +120,7 @@ class ChatRequest(BaseModel):
     
     @field_validator('question')
     @classmethod
-    def validate_question(cls, v):
+    def validate_question(cls, v: str) -> str:
         # Basic sanitization
         v = re.sub(r'<script.*?</script>', '', v, flags=re.IGNORECASE | re.DOTALL)
         v = re.sub(r'<.*?>', '', v)
@@ -130,6 +141,49 @@ class ChatResponse(BaseModel):
     context_sources: List[str] = []
     confidence_score: Optional[float] = None
 
+
+# Models for quiz-generation payload from platform
+class StudentBehavior(BaseModel):
+    hint_count: int = 0
+    bottom_hint: bool = False
+    attempt_count: int = 0
+    ms_first_response: int = 0
+    duration: int = 0
+    confidence_frustrated: float = 0.0
+    confidence_confused: float = 0.0
+    confidence_concentrating: float = 0.0
+    confidence_bored: float = 0.0
+    action_count: int = 0
+    hint_dependency: float = 0.0
+    response_speed: Optional[str] = None
+    confidence_balance: float = 0.0
+    engagement_ratio: float = 0.0
+    efficiency_indicator: float = 0.0
+    predicted_score: float = 0.0
+    performance_category: Optional[str] = None
+    learner_profile: Optional[str] = None
+
+
+class QuizRequest(BaseModel):
+    """Payload for quiz generation coming from the platform"""
+    context_refs: List[str] = []
+    topics: List[str] = Field(..., description="List of topic strings")
+    difficulty: Optional[str] = Field("medium")
+    type: Optional[str] = Field("mcq")
+    n_questions: int = Field(10, ge=1, le=100)
+    include_explanations: bool = True
+    include_resources: bool = True
+    student_behavior: Optional[StudentBehavior] = None
+
+    @field_validator('topics')
+    @classmethod
+    def check_topics(cls, v: List[str]) -> List[str]:
+        if not v or len(v) < 1:
+            raise ValueError('topics must contain at least one topic')
+        return v
+
+
+
 class MetricsResponse(BaseModel):
     """Response model for metrics endpoint"""
     total_requests: int
@@ -145,13 +199,15 @@ class MetricsCollector:
     def __init__(self):
         self.total_requests = 0
         self.successful_requests = 0
+
+        # runtime collections
         self.response_times = deque(maxlen=1000)
         self.api_usage = defaultdict(int)
         self.cache_hits = 0
         self.cache_misses = 0
         self.errors = defaultdict(int)
         self.lock = threading.Lock()
-    
+
     def record_request(self, success: bool, response_time: float, api_used: str, cache_hit: bool = False):
         with self.lock:
             self.total_requests += 1
@@ -163,18 +219,18 @@ class MetricsCollector:
                 self.cache_hits += 1
             else:
                 self.cache_misses += 1
-    
+
     def record_error(self, error_type: str):
         with self.lock:
             self.errors[error_type] += 1
-    
+
     def get_metrics(self) -> MetricsResponse:
         with self.lock:
             success_rate = self.successful_requests / max(self.total_requests, 1)
             avg_response_time = sum(self.response_times) / max(len(self.response_times), 1)
             cache_hit_rate = self.cache_hits / max(self.cache_hits + self.cache_misses, 1)
             error_rate = sum(self.errors.values()) / max(self.total_requests, 1)
-            
+
             return MetricsResponse(
                 total_requests=self.total_requests,
                 success_rate=success_rate,
@@ -185,7 +241,64 @@ class MetricsCollector:
                 timestamp=datetime.now().isoformat()
             )
 
+
 metrics = MetricsCollector()
+
+
+@app.post('/generate_quiz')
+async def generate_quiz_endpoint(payload: QuizRequest):
+    """Accept quiz-generation payload from external platform and return generated questions.
+
+    This endpoint expects the platform to supply student behavior and topic/context references.
+    We merge the payload with local defaults and return a placeholder quiz structure. Replace
+    the placeholder logic with calls to your question-generation AI or RAG pipeline as needed.
+    """
+    # Merge incoming payload with defaults
+    default_question_count = 10
+    n_questions = payload.n_questions or default_question_count
+
+    # Build a simple placeholder quiz
+    questions = []
+    for i in range(n_questions):
+        q = {
+            'id': str(uuid.uuid4()),
+            'type': payload.type or 'mcq',
+            'topic': payload.topics[i % len(payload.topics)],
+            'difficulty': payload.difficulty,
+            'question_text': f"Placeholder question {i+1} on {payload.topics[i % len(payload.topics)]}",
+            'choices': ["A", "B", "C", "D"],
+            'answer': "A",
+            'explanation': "This is a placeholder explanation." if payload.include_explanations else None
+        }
+        if payload.include_resources:
+            q['resources'] = payload.context_refs or []
+        questions.append(q)
+
+    questions: List[Dict[str, Any]] = []
+    for i in range(n_questions):
+        q: Dict[str, Any] = {
+            'id': str(uuid.uuid4()),
+            'type': payload.type or 'mcq',
+            'topic': payload.topics[i % len(payload.topics)],
+            'difficulty': payload.difficulty,
+            'question_text': f"Placeholder question {i+1} on {payload.topics[i % len(payload.topics)]}",
+            'choices': ["A", "B", "C", "D"],
+            'answer': "A",
+            'explanation': "This is a placeholder explanation." if payload.include_explanations else None
+        }
+        if payload.include_resources:
+            q['resources'] = payload.context_refs or []
+        questions.append(q)
+
+    result: Dict[str, Any] = {
+        'quiz_id': str(uuid.uuid4()),
+        'n_questions': len(questions),
+        'questions': questions,
+        'student_behavior_accepted': payload.student_behavior.model_dump() if payload.student_behavior else None,
+        'generated_by': 'RAG-Tutor-Chatbot (placeholder)'
+    }
+
+    return JSONResponse(status_code=200, content=result)
 
 def load_api_keys() -> Dict[str, Optional[str]]:
     """Load and validate API keys from environment variables"""

@@ -1,43 +1,72 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Virtual environments
-.env
-.venv
-env/
+# Virtual Environment
+myenv/
 venv/
+env/
 ENV/
 env.bak/
 venv.bak/
-myenv/
 
-# IDE and editor files
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+logs/
+app.log
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS generated files
+# OS
 .DS_Store
 .DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-Thumbs.db:encryptable
-Desktop.ini
-$RECYCLE.BIN/
 
-# Logs
-*.log
-logs/
+# Cache
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Database files
+# Data files
+data/
+cache/
 *.db
-*.sqlite
 *.sqlite3
 
 # Temporary files
@@ -45,37 +74,3 @@ logs/
 *.temp
 temp/
 tmp/
-
-# Configuration files with sensitive data
-config.ini
-secrets.json
-credentials.json
-
-# Testing
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Files we don't want to accidentally re-add
-railway.json
-RAILWAY_DEPLOY.md
-DEPLOY_CHECKLIST.md
-Dockerfile
-docker-compose.yml
-Procfile
-requirements-dev.txt
-.pre-commit-config.yaml
-setup.py
