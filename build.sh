@@ -6,15 +6,11 @@ echo "Starting build process..."
 # Upgrade pip
 pip install --upgrade pip
 
-# Check if we're on Render free tier (more aggressive detection)
-if [ "$RENDER" = "true" ] || [ "$MEMORY_LIMIT" = "512" ] || [ "$RENDER_FREE_TIER" = "true" ]; then
-    echo "Detected Render free tier - using minimal requirements"
-    pip install -r requirements-minimal.txt
-    # Set environment variable to ensure app knows it's free tier
-    export RENDER_FREE_TIER=true
-else
-    echo "Using full requirements with ML dependencies"
-    pip install -r requirements.txt
-fi
+# Install minimal requirements optimized for Render free tier
+echo "Installing minimal requirements for Render free tier (512MB limit)"
+pip install -r requirements.txt
+
+# Set environment variable to ensure app knows it's free tier
+export RENDER_FREE_TIER=true
 
 echo "Build completed successfully!"
