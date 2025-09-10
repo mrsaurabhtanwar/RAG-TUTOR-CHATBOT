@@ -41,9 +41,11 @@ A production-ready AI tutoring service with Retrieval-Augmented Generation (RAG)
 1. **Connect your GitHub repository to Render**
 
 2. **Create a new Web Service**
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `python fastapi_app.py`
-   - Environment: Python 3
+   - Use the provided `render.yaml` configuration
+   - Or manually set:
+     - Build Command: `chmod +x build.sh && ./build.sh`
+     - Start Command: `python fastapi_app.py`
+     - Environment: Python 3.11.10
 
 3. **Set Environment Variables** (optional)
    - `OPENROUTER_API_KEY`: Your OpenRouter API key
@@ -52,6 +54,8 @@ A production-ready AI tutoring service with Retrieval-Augmented Generation (RAG)
    - `GOOGLE_CX`: Your Google Custom Search Engine ID
 
 4. **Deploy!** 🎉
+
+**Note**: The deployment is optimized for Render's starter plan with Python 3.11.10 and includes all necessary ML dependencies for RAG functionality.
 
 ## 📡 API Endpoints
 

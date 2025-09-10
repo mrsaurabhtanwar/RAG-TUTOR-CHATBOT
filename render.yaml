@@ -5,7 +5,7 @@ services:
     env: python
     plan: starter
     region: oregon
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "chmod +x build.sh && ./build.sh"
     startCommand: "python fastapi_app.py"
     healthCheckPath: "/health"
     envVars:
@@ -13,6 +13,8 @@ services:
         value: 3.11.10
       - key: PORT
         generateValue: true
+      - key: PIP_NO_CACHE_DIR
+        value: "1"
     # Add your environment variables in Render dashboard:
     # OPENROUTER_API_KEY (optional fallback)
     # HUGGINGFACE_API_KEY (optional fallback)

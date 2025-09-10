@@ -21,7 +21,7 @@ wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+# Virtual environments
 myenv/
 venv/
 env/
@@ -39,7 +39,6 @@ venv.bak/
 # Logs
 *.log
 logs/
-app.log
 
 # IDE
 .vscode/
@@ -57,20 +56,6 @@ app.log
 ehthumbs.db
 Thumbs.db
 
-# Cache
-.cache/
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Data files
-data/
-cache/
-*.db
-*.sqlite3
-
 # Temporary files
 *.tmp
 *.temp
-temp/
-tmp/
