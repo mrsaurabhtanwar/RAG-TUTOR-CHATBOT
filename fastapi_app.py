@@ -37,8 +37,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('app.log'),
-        logging.StreamHandler()
+        logging.StreamHandler()  # Only use console logging for Render
     ]
 )
 logger = logging.getLogger(__name__)
@@ -92,9 +91,9 @@ app.add_middleware(
 # Add CORS middleware with more restrictive settings
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000").split(","),
+    allow_origins=["*"],  # Allow all origins for Render deployment
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -1078,27 +1077,44 @@ async def debug_endpoint() -> Dict[str, Any]:
 @app.get("/health")
 async def health_check() -> Dict[str, Any]:
     """Health check with comprehensive status"""
-    return {
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'api_keys': {
-            'groq': bool(GROQ_API_KEY),
-            'openrouter': bool(OPENROUTER_API_KEY),
-            'huggingface': bool(HUGGINGFACE_API_KEY),
-            'google': bool(GOOGLE_API_KEY and GOOGLE_CX)
-        },
-        'rag_system': {
-            'embedding_model': rag_processor.embedding_manager.model_name if rag_processor else "disabled",
-            'vector_store_documents': len(rag_processor.vector_store.documents) if rag_processor else 0,
-            'cache_size': len(rag_processor.cache) if rag_processor else 0,
-            'ml_available': ML_AVAILABLE
-        },
-        'system': {
-            'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-            'uptime': 'running',
-            'port': os.getenv("PORT", "8000"),
-            'render_free_tier': RENDER_FREE_TIER
+    try:
+        return {
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'api_keys': {
+                'groq': bool(GROQ_API_KEY),
+                'openrouter': bool(OPENROUTER_API_KEY),
+                'huggingface': bool(HUGGINGFACE_API_KEY),
+                'google': bool(GOOGLE_API_KEY and GOOGLE_CX)
+            },
+            'rag_system': {
+                'embedding_model': rag_processor.embedding_manager.model_name if rag_processor else "disabled",
+                'vector_store_documents': len(rag_processor.vector_store.documents) if rag_processor else 0,
+                'cache_size': len(rag_processor.cache) if rag_processor else 0,
+                'ml_available': ML_AVAILABLE
+            },
+            'system': {
+                'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                'uptime': 'running',
+                'port': os.getenv("PORT", "8000"),
+                'render_free_tier': RENDER_FREE_TIER
+            }
         }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+@app.get("/test")
+async def test_endpoint() -> Dict[str, Any]:
+    """Simple test endpoint to verify the application is working"""
+    return {
+        'status': 'ok',
+        'message': 'Application is running',
+        'timestamp': datetime.now().isoformat()
     }
 
 @app.get("/")
@@ -1131,8 +1147,16 @@ async def metrics_endpoint() -> MetricsResponse:
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting AI Tutor Service with RAG capabilities...")
-    
-    # Use Render's PORT environment variable or default to 8000 for local development
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    try:
+        logger.info("Starting AI Tutor Service with RAG capabilities...")
+        logger.info(f"RENDER_FREE_TIER: {RENDER_FREE_TIER}")
+        logger.info(f"ML_AVAILABLE: {ML_AVAILABLE}")
+        
+        # Use Render's PORT environment variable or default to 8000 for local development
+        port = int(os.getenv("PORT", 8000))
+        logger.info(f"Starting server on port {port}")
+        
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        raise
