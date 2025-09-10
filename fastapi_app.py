@@ -320,7 +320,8 @@ def load_api_keys() -> Dict[str, Optional[str]]:
         'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
         'GOOGLE_CX': os.getenv('GOOGLE_CX'),
         'HUGGINGFACE_API_KEY': os.getenv('HUGGINGFACE_API_KEY'),
-        'GROQ_API_KEY': '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'  # Direct assignment as requested
+        'GROQ_API_KEY': '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',  # Direct assignment as requested
+        'GOOGLE_GEMINI_API_KEY': 'AIzaSyA6INKyHDOFglF1T3mkcG8mVdZWQuWfbW4'  # Direct assignment as requested
     }
     
     logger.info("=== API Keys Status ===")
@@ -344,6 +345,7 @@ GOOGLE_API_KEY = api_keys.get('GOOGLE_API_KEY')
 GOOGLE_CX = api_keys.get('GOOGLE_CX')
 HUGGINGFACE_API_KEY = api_keys.get('HUGGINGFACE_API_KEY')
 GROQ_API_KEY = api_keys.get('GROQ_API_KEY')
+GOOGLE_GEMINI_API_KEY = api_keys.get('GOOGLE_GEMINI_API_KEY')
 
 # RAG Components
 class EmbeddingManager:
@@ -767,6 +769,65 @@ class AIProvider:
             logger.error(f"HuggingFace API error: {e}")
             return None, debug_info
 
+    @staticmethod
+    async def call_gemini(prompt: str, max_tokens: int = 1500) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Call Google Gemini API with retry logic"""
+        debug_info: Dict[str, Any] = {"attempted": True, "error": None}
+        
+        if not GOOGLE_GEMINI_API_KEY:
+            debug_info["error"] = "No API key provided"
+            return None, debug_info
+        
+        async def _make_request():
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_GEMINI_API_KEY}"
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "contents": [
+                    {
+                        "parts": [
+                            {
+                                "text": f"You are an expert AI tutor. Provide accurate, helpful responses based on the context provided.\n\n{prompt}"
+                            }
+                        ]
+                    }
+                ],
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "temperature": 0.7,
+                    "topP": 0.8,
+                    "topK": 10
+                }
+            }
+            
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    candidate = result['candidates'][0]
+                    if 'content' in candidate and 'parts' in candidate['content']:
+                        answer = candidate['content']['parts'][0]['text'].strip()
+                        debug_info["success"] = True
+                        debug_info["response_length"] = len(answer)
+                        return answer
+                    else:
+                        raise Exception("No content in response")
+                else:
+                    raise Exception("No candidates in response")
+            else:
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
+        
+        try:
+            answer = await RetryManager.retry_with_backoff(_make_request)
+            return answer, debug_info
+        except Exception as e:
+            debug_info["error"] = str(e)
+            logger.error(f"Gemini API error: {e}")
+            return None, debug_info
+
 class ResourceFinder:
     """Handles finding relevant videos and websites"""
     
@@ -952,6 +1013,16 @@ Please provide a comprehensive answer that incorporates the relevant information
                 confidence_score = 0.8
                 logger.info("HuggingFace succeeded!")
         
+        # Try Google Gemini if others failed
+        if not answer and GOOGLE_GEMINI_API_KEY:
+            logger.info("Trying Google Gemini API...")
+            answer, gemini_debug = await ai_provider.call_gemini(enhanced_prompt, chat_request.max_tokens)
+            debug_info["gemini"] = gemini_debug
+            if answer:
+                api_used = "Google Gemini"
+                confidence_score = 0.85
+                logger.info("Google Gemini succeeded!")
+        
         # Use comprehensive fallback if all APIs failed
         if not answer:
             logger.warning("All APIs failed, using comprehensive fallback")
@@ -1052,6 +1123,18 @@ async def debug_endpoint() -> Dict[str, Any]:
         }
     else:
         results["huggingface"] = {"configured": False}
+    
+    # Test Google Gemini
+    if GOOGLE_GEMINI_API_KEY:
+        answer, debug_info = await ai_provider.call_gemini(test_question, 100)
+        results["gemini"] = {
+            "configured": True,
+            "working": bool(answer),
+            "debug": debug_info,
+            "sample_response": answer[:100] if answer else None
+        }
+    else:
+        results["gemini"] = {"configured": False}
     
     # Test RAG system
     if rag_processor:
