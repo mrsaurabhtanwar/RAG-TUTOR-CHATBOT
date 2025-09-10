@@ -55,7 +55,7 @@ A production-ready AI tutoring service with Retrieval-Augmented Generation (RAG)
 
 4. **Deploy!** 🎉
 
-**Note**: The deployment is optimized for Render's starter plan with Python 3.11.10 and includes all necessary ML dependencies for RAG functionality.
+**Note**: The deployment is optimized for Render's free tier (512MB memory limit) with Python 3.11.10. ML dependencies are automatically disabled on free tier to prevent memory issues, but the core AI functionality remains fully operational.
 
 ## 📡 API Endpoints
 
@@ -123,6 +123,17 @@ The RAG system includes pre-loaded educational content covering:
 - Physics concepts
 - Chemistry basics
 - Biology (cell structure)
+
+**Note**: On Render's free tier (512MB memory), the RAG system runs in basic mode without vector embeddings to stay within memory limits. The AI responses are still fully functional using the configured APIs.
+
+### Free Tier Optimization
+
+The application automatically detects when running on Render's free tier and:
+- ✅ Disables heavy ML dependencies (sentence-transformers, faiss, torch)
+- ✅ Uses lightweight requirements (requirements-free.txt)
+- ✅ Maintains full AI functionality with Groq API
+- ✅ Provides educational responses without vector search
+- ✅ Stays within 512MB memory limit
 
 ## 🏗️ Architecture
 

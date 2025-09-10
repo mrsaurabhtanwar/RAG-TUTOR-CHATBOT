@@ -1,9 +1,9 @@
-# Render Production Configuration
+# Render Free Tier Configuration
 services:
   - type: web
     name: rag-tutor-chatbot
     env: python
-    plan: starter
+    plan: free
     region: oregon
     buildCommand: "chmod +x build.sh && ./build.sh"
     startCommand: "python fastapi_app.py"
@@ -15,6 +15,10 @@ services:
         generateValue: true
       - key: PIP_NO_CACHE_DIR
         value: "1"
+      - key: RENDER
+        value: "true"
+      - key: MEMORY_LIMIT
+        value: "512"
     # Add your environment variables in Render dashboard:
     # OPENROUTER_API_KEY (optional fallback)
     # HUGGINGFACE_API_KEY (optional fallback)

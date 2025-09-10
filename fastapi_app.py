@@ -48,19 +48,27 @@ ML_AVAILABLE = False
 np: Any = None
 SentenceTransformer: Any = None
 faiss: Any = None
+
+# Check if we're on Render free tier (limited memory)
+RENDER_FREE_TIER = os.getenv("RENDER", False) and os.getenv("MEMORY_LIMIT", "512") == "512"
+
 if TYPE_CHECKING:
     # Help type-checkers without requiring runtime packages
     from sentence_transformers import SentenceTransformer  # type: ignore
     import faiss  # type: ignore
 
-try:
-    import numpy as np
-    from sentence_transformers import SentenceTransformer  # type: ignore
-    import faiss  # type: ignore
-    globals()['ML_AVAILABLE'] = True
-    logger.info("ML dependencies loaded successfully")
-except ImportError as e:
-    logger.warning(f"ML dependencies not available: {e}. Running in basic mode.")
+# Skip ML dependencies on Render free tier to avoid memory issues
+if not RENDER_FREE_TIER:
+    try:
+        import numpy as np
+        from sentence_transformers import SentenceTransformer  # type: ignore
+        import faiss  # type: ignore
+        globals()['ML_AVAILABLE'] = True
+        logger.info("ML dependencies loaded successfully")
+    except ImportError as e:
+        logger.warning(f"ML dependencies not available: {e}. Running in basic mode.")
+else:
+    logger.info("Running on Render free tier - ML dependencies disabled to save memory")
 
 # Initialize FastAPI app
 app = FastAPI(
