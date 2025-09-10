@@ -44,8 +44,9 @@ A production-ready AI tutoring service with Retrieval-Augmented Generation (RAG)
    - Use the provided `render.yaml` configuration
    - Or manually set:
      - Build Command: `chmod +x build.sh && ./build.sh`
-     - Start Command: `python fastapi_app.py`
+     - Start Command: `chmod +x start.sh && ./start.sh`
      - Environment: Python 3.11.10
+     - Health Check Path: `/health`
 
 3. **Set Environment Variables** (optional)
    - `OPENROUTER_API_KEY`: Your OpenRouter API key
@@ -130,10 +131,11 @@ The RAG system includes pre-loaded educational content covering:
 
 The application automatically detects when running on Render's free tier and:
 - ✅ Disables heavy ML dependencies (sentence-transformers, faiss, torch)
-- ✅ Uses lightweight requirements (requirements-free.txt)
+- ✅ Uses ultra-minimal requirements (requirements-minimal.txt)
 - ✅ Maintains full AI functionality with Groq API
 - ✅ Provides educational responses without vector search
 - ✅ Stays within 512MB memory limit
+- ✅ Multiple detection methods for reliable free tier detection
 
 ## 🏗️ Architecture
 
@@ -201,12 +203,32 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 4. Add tests if applicable
 5. Submit a pull request
 
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**Port Binding Issues:**
+- Ensure the start command uses `uvicorn` with proper port binding
+- Check that the `PORT` environment variable is set correctly
+- Verify the health check path is set to `/health`
+
+**Memory Issues on Free Tier:**
+- The application automatically detects free tier and disables ML dependencies
+- Check logs for "Running on Render free tier" message
+- Verify `requirements-free.txt` is being used
+
+**API Issues:**
+- Check the `/debug` endpoint to test API connectivity
+- Verify API keys are set correctly in environment variables
+- Review the `/health` endpoint for API key status
+
 ## 📞 Support
 
 For support or questions:
 - Create an issue in the repository
 - Check the `/health` endpoint for system status
 - Review logs for debugging information
+- Use the `/debug` endpoint to test API connectivity
 
 ---
 

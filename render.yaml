@@ -6,7 +6,7 @@ services:
     plan: free
     region: oregon
     buildCommand: "chmod +x build.sh && ./build.sh"
-    startCommand: "python fastapi_app.py"
+    startCommand: "chmod +x start.sh && ./start.sh"
     healthCheckPath: "/health"
     envVars:
       - key: PYTHON_VERSION
@@ -19,6 +19,8 @@ services:
         value: "true"
       - key: MEMORY_LIMIT
         value: "512"
+      - key: RENDER_FREE_TIER
+        value: "true"
     # Add your environment variables in Render dashboard:
     # OPENROUTER_API_KEY (optional fallback)
     # HUGGINGFACE_API_KEY (optional fallback)

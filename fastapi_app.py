@@ -50,7 +50,11 @@ SentenceTransformer: Any = None
 faiss: Any = None
 
 # Check if we're on Render free tier (limited memory)
-RENDER_FREE_TIER = os.getenv("RENDER", False) and os.getenv("MEMORY_LIMIT", "512") == "512"
+RENDER_FREE_TIER = (
+    os.getenv("RENDER", False) or 
+    os.getenv("MEMORY_LIMIT", "512") == "512" or
+    os.getenv("RENDER_FREE_TIER", False)
+)
 
 if TYPE_CHECKING:
     # Help type-checkers without requiring runtime packages
@@ -69,6 +73,8 @@ if not RENDER_FREE_TIER:
         logger.warning(f"ML dependencies not available: {e}. Running in basic mode.")
 else:
     logger.info("Running on Render free tier - ML dependencies disabled to save memory")
+    # Force disable ML dependencies
+    globals()['ML_AVAILABLE'] = False
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -1089,14 +1095,11 @@ async def health_check() -> Dict[str, Any]:
         },
         'system': {
             'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-            'uptime': 'running'
+            'uptime': 'running',
+            'port': os.getenv("PORT", "8000"),
+            'render_free_tier': RENDER_FREE_TIER
         }
     }
-
-@app.get("/metrics", response_model=MetricsResponse)
-async def metrics_endpoint() -> MetricsResponse:
-    """Get system metrics"""
-    return metrics.get_metrics()
 
 @app.get("/")
 async def root() -> Dict[str, Any]:
@@ -1120,6 +1123,11 @@ async def root() -> Dict[str, Any]:
             'Structured Logging and Metrics'
         ]
     }
+
+@app.get("/metrics", response_model=MetricsResponse)
+async def metrics_endpoint() -> MetricsResponse:
+    """Get system metrics"""
+    return metrics.get_metrics()
 
 if __name__ == "__main__":
     import uvicorn
