@@ -1,12 +1,12 @@
-# Render Free Tier Configuration
+# Render Production Configuration
 services:
   - type: web
     name: rag-tutor-chatbot
     env: python
-    plan: free
+    plan: starter
     region: oregon
-    buildCommand: "chmod +x build.sh && ./build.sh"
-    startCommand: "uvicorn fastapi_app:app --host 0.0.0.0 --port $PORT --workers 1"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python fastapi_app.py"
     healthCheckPath: "/health"
     envVars:
       - key: PYTHON_VERSION
@@ -14,9 +14,8 @@ services:
       - key: PORT
         generateValue: true
     # Add your environment variables in Render dashboard:
-    # OPENROUTER_API_KEY (required)
-    # GROQ_API_KEY (optional fallback)
+    # OPENROUTER_API_KEY (optional fallback)
     # HUGGINGFACE_API_KEY (optional fallback)
-    # RAPIDAPI_KEY (optional for YouTube search)
     # GOOGLE_API_KEY (optional for Google search)
     # GOOGLE_CX (optional for Google search)
+    # Note: Groq API key is already configured in the code

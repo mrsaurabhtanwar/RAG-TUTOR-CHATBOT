@@ -301,14 +301,13 @@ async def generate_quiz_endpoint(payload: QuizRequest):
     return JSONResponse(status_code=200, content=result)
 
 def load_api_keys() -> Dict[str, Optional[str]]:
-    """Load and validate API keys from environment variables"""
+    """Load and validate API keys from environment variables or direct assignment"""
     keys = {
         'OPENROUTER_API_KEY': os.getenv('OPENROUTER_API_KEY'),
-        'RAPIDAPI_KEY': os.getenv('RAPIDAPI_KEY'),
         'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
         'GOOGLE_CX': os.getenv('GOOGLE_CX'),
         'HUGGINGFACE_API_KEY': os.getenv('HUGGINGFACE_API_KEY'),
-        'GROQ_API_KEY': os.getenv('GROQ_API_KEY')
+        'GROQ_API_KEY': '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'  # Direct assignment as requested
     }
     
     logger.info("=== API Keys Status ===")
@@ -328,7 +327,6 @@ def load_api_keys() -> Dict[str, Optional[str]]:
 # Load API keys globally
 api_keys = load_api_keys()
 OPENROUTER_API_KEY = api_keys.get('OPENROUTER_API_KEY')
-RAPIDAPI_KEY = api_keys.get('RAPIDAPI_KEY')
 GOOGLE_API_KEY = api_keys.get('GOOGLE_API_KEY')
 GOOGLE_CX = api_keys.get('GOOGLE_CX')
 HUGGINGFACE_API_KEY = api_keys.get('HUGGINGFACE_API_KEY')
@@ -594,6 +592,7 @@ class RetryManager:
 class AIProvider:
     """Handles AI API interactions with different providers"""
     
+    
     @staticmethod
     async def call_openrouter(prompt: str, max_tokens: int = 1500) -> Tuple[Optional[str], Dict[str, Any]]:
         """Call OpenRouter API with retry logic"""
@@ -613,7 +612,7 @@ class AIProvider:
             }
             
             data: Dict[str, Any] = {
-                "model": "meta-llama/llama-3.1-8b-instruct:free",
+                "model": "meta-llama/llama-3.1-8b-instruct",
                 "messages": [
                     {
                         "role": "system",
@@ -667,7 +666,7 @@ class AIProvider:
             }
             
             data: Dict[str, Any] = {
-                "model": "llama3-8b-8192",
+                "model": "llama-3.1-8b-instant",
                 "messages": [
                     {
                         "role": "system",
@@ -714,7 +713,7 @@ class AIProvider:
             return None, debug_info
         
         async def _make_request():
-            url = "https://api-inference.huggingface.co/models/google/flan-t5-large"
+            url = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
             headers = {
                 "Authorization": f"Bearer {HUGGINGFACE_API_KEY}",
                 "Content-Type": "application/json"
@@ -760,31 +759,7 @@ class ResourceFinder:
     
     @staticmethod
     async def search_youtube(query: str) -> str:
-        """Search YouTube with fallback to manual search"""
-        if not RAPIDAPI_KEY:
-            return f"https://www.youtube.com/results?search_query={quote(query + ' tutorial')}"
-
-        try:
-            url = 'https://youtube138.p.rapidapi.com/search/'
-            params: Dict[str, str] = {'q': query + ' tutorial', 'hl': 'en', 'gl': 'US'}
-            headers: Dict[str, str] = {
-                'X-RapidAPI-Key': RAPIDAPI_KEY,
-                'X-RapidAPI-Host': 'youtube138.p.rapidapi.com'
-            }
-
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'contents' in data and data['contents']:
-                    for item in data['contents']:
-                        video = item.get('video')
-                        if video and video.get('videoId'):
-                            return f"https://www.youtube.com/watch?v={video['videoId']}"
-        
-        except Exception as e:
-            logger.error(f"YouTube search error: {e}")
-
+        """Search YouTube with manual search"""
         return f"https://www.youtube.com/results?search_query={quote(query + ' tutorial')}"
     
     @staticmethod
@@ -934,8 +909,18 @@ Please provide a comprehensive answer that incorporates the relevant information
         api_used = "none"
         confidence_score = None
         
-        # Try OpenRouter
-        if OPENROUTER_API_KEY:
+        # Try Groq first (highest priority - most reliable)
+        if GROQ_API_KEY:
+            logger.info("Trying Groq API...")
+            answer, groq_debug = await ai_provider.call_groq(enhanced_prompt, chat_request.max_tokens)
+            debug_info["groq"] = groq_debug
+            if answer:
+                api_used = "Groq"
+                confidence_score = 0.95
+                logger.info("Groq succeeded!")
+        
+        # Try OpenRouter if Groq failed
+        if not answer and OPENROUTER_API_KEY:
             logger.info("Trying OpenRouter API...")
             answer, openrouter_debug = await ai_provider.call_openrouter(enhanced_prompt, chat_request.max_tokens)
             debug_info["openrouter"] = openrouter_debug
@@ -944,16 +929,6 @@ Please provide a comprehensive answer that incorporates the relevant information
                 confidence_score = 0.9
                 logger.info("OpenRouter succeeded!")
         
-        # Try Groq if OpenRouter failed
-        if not answer and GROQ_API_KEY:
-            logger.info("Trying Groq API...")
-            answer, groq_debug = await ai_provider.call_groq(enhanced_prompt, chat_request.max_tokens)
-            debug_info["groq"] = groq_debug
-            if answer:
-                api_used = "Groq"
-                confidence_score = 0.8
-                logger.info("Groq succeeded!")
-        
         # Try HuggingFace if others failed
         if not answer and HUGGINGFACE_API_KEY:
             logger.info("Trying HuggingFace API...")
@@ -961,7 +936,7 @@ Please provide a comprehensive answer that incorporates the relevant information
             debug_info["huggingface"] = hf_debug
             if answer:
                 api_used = "HuggingFace"
-                confidence_score = 0.7
+                confidence_score = 0.8
                 logger.info("HuggingFace succeeded!")
         
         # Use comprehensive fallback if all APIs failed
@@ -1028,6 +1003,7 @@ async def debug_endpoint() -> Dict[str, Any]:
     test_question = "What is 2+2?"
     results: Dict[str, Any] = {}
     
+    
     # Test OpenRouter
     if OPENROUTER_API_KEY:
         answer, debug_info = await ai_provider.call_openrouter(test_question, 100)
@@ -1092,11 +1068,10 @@ async def health_check() -> Dict[str, Any]:
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'api_keys': {
-            'openrouter': bool(OPENROUTER_API_KEY),
             'groq': bool(GROQ_API_KEY),
+            'openrouter': bool(OPENROUTER_API_KEY),
             'huggingface': bool(HUGGINGFACE_API_KEY),
-            'google': bool(GOOGLE_API_KEY and GOOGLE_CX),
-            'rapidapi': bool(RAPIDAPI_KEY)
+            'google': bool(GOOGLE_API_KEY and GOOGLE_CX)
         },
         'rag_system': {
             'embedding_model': rag_processor.embedding_manager.model_name if rag_processor else "disabled",
@@ -1130,7 +1105,7 @@ async def root() -> Dict[str, Any]:
         },
         'features': [
             'RAG (Retrieval-Augmented Generation)',
-            'Multi-AI Provider Support',
+            'Multi-AI Provider Support (Groq, OpenRouter, HuggingFace)',
             'Vector Similarity Search',
             'Caching and Performance Optimization',
             'Rate Limiting and Security',

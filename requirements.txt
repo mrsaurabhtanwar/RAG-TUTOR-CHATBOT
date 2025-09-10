@@ -1,19 +1,25 @@
-# Optimized requirements for Render Free Tier
+# Production-ready requirements for Render deployment
 # Core FastAPI Dependencies
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 
 # HTTP and Request Handling
-httpx==0.27.2
 requests==2.32.3
 python-multipart==0.0.12
 
 # Environment and Configuration
 python-dotenv==1.0.1
 
-# AI Libraries (Minimal for deployment)
+# AI Libraries
 openai==1.51.2
+
+# ML Dependencies for RAG functionality
+sentence-transformers==3.0.1
+faiss-cpu==1.8.0
+numpy==1.26.4
+torch==2.2.2
+transformers==4.44.2
 
 # Basic utilities
 typing-extensions==4.12.2
@@ -29,6 +35,3 @@ httpcore==1.0.6
 click==8.1.7
 colorama==0.4.6
 tqdm==4.66.5
-
-# Note: ML dependencies (sentence-transformers, faiss, numpy) removed for free tier
-# App will run in basic mode without RAG functionality
